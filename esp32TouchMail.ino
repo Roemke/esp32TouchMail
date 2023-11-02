@@ -117,7 +117,7 @@ void sendMailMessage(char * subj, char * text)
   message.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_low;
 
   String headerA = "Message-ID: <";
-  headerA += AUTHOR_EMAIL;
+  headerA += sender;
   headerA += ">";
   message.addHeader(headerA.c_str());
 
@@ -275,6 +275,8 @@ void evaluateSetup(AsyncWebServerRequest *request)
         smtpPort = evaluateSingle("smtpPort",p->value().c_str()).toInt();
     }
   }
+  request->send_P(200, "text/html", setup_html, processor); //durch processor filtern     
+
   //request->send(200, "text/plain", "Done. ESP will restart, connect to your router and search for ip of this device :-)");
   //delay(3000);
   //ESP.restart();
