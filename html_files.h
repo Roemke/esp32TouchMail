@@ -156,11 +156,15 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
           Changing Network-Settings: You need to restart ESP, don't forget to save before :-)
         </div>
         <form action="/" method="POST">
-          <p>
-            <label for="ssid">SSID</label>
+          <p> <!-- hmm beim naechsten Projekt in einer Schleife generieren -->
+            <label for="ssid">ESSID</label>
             <input type="text" id ="essid" name="essid" value="%ESSID%"><br>
-            <label for="pass">Password</label>
+            <label for="pass">Password (WLan)</label>
             <input type="text" id ="pass" name="pass" value="%PASS%"><br>
+            <label for="httpdUser">Httpd-User (for this page)</label>
+            <input type="text" id ="httpdUser" name="httpdUser" value="%HTTPDUSER%"><br>
+            <label for="httpdPass">Password (for user)</label>
+            <input type="text" id ="httpdPass" name="httpdPass" value="%HTTPDPASS%"><br>
             <label for="sender">E-Mail Sender</label>
             <input type="text" id ="sender" name="sender" value="%SENDER%"><br>
             <label for="smtpHost">SMTP-Host</label>

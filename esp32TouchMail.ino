@@ -4,6 +4,12 @@
 #include <ESPAsyncWebServer.h>    
 #include <ESP_Mail_Client.h>
 #include "html_files.h"
+//define vor dem include -> sonst wird es auf 0 gesetzt nein, muss tatsaechlich in der ElegantOTA.h gesetzt werden 
+//#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
+#include <ElegantOTA.h>
+//#include <AsyncElegantOTA.h> //das ein warning, man möge ElegantOTA nutzen ...
+//ElegantOTA authentication ueberprueft nur /update, den Rest muesste man selbst machen 
+//https://randomnerdtutorials.com/esp32-esp8266-web-server-http-authentication/
 
 //erstmal nach https://randomnerdtutorials.com/esp32-wi-fi-manager-asyncwebserver/
 
@@ -19,6 +25,8 @@ const String ApIp = "192.168.4.1";
 String actualIP = ApIp;
 String essid = "";
 String pass = "";
+String httpdUser = "admin";
+String httpdPass = "admin";
 //email
 String sender= "";
 String receiver = "";
@@ -48,6 +56,31 @@ int threshold = 40;
 RTC_DATA_ATTR unsigned int wakeByTouch = 0;
 AsyncWebServer server(80);
 
+unsigned long ota_progress_millis = 0;
+
+void onOTAStart() {
+  // Log when OTA has started
+  Serial.println("OTA update started!");
+  // <Add your own code here>
+}
+
+void onOTAProgress(size_t current, size_t final) {
+  // Log every 1 second
+  if (millis() - ota_progress_millis > 1000) {
+    ota_progress_millis = millis();
+    Serial.printf("OTA Progress Current: %u bytes, Final: %u bytes\n", current, final);
+  }
+}
+
+void onOTAEnd(bool success) {
+  // Log when OTA has finished
+  if (success) {
+    Serial.println("OTA update finished successfully!");
+  } else {
+    Serial.println("There was an error during OTA update!");
+  }
+  // <Add your own code here>
+}
 
 //Mail funktionen
 void smtpCallback(SMTP_Status status){
@@ -165,6 +198,10 @@ String processor(const String& var)
     result = essid;
   else if (var == "PASS")
     result = pass;
+  else if (var == "HTTPDUSER")
+    result = httpdUser;
+  else if (var == "HTTPDPASS")
+    result = httpdPass;
   else if (var == "UPDATE_LINK")
     result = "<a href=\"http://" + actualIP +"/update\"> Update </a>";
   else if (var == "MAC")
@@ -255,6 +292,10 @@ void evaluateSetup(AsyncWebServerRequest *request)
         essid = evaluateSingle("essid",p->value().c_str());
       else if (p->name() == "pass") 
         pass = evaluateSingle("pass",p->value().c_str());      
+      else if (p->name() == "httpdUser") 
+        httpdUser = evaluateSingle("httpdUser",p->value().c_str());      
+      else if (p->name() == "httpdPass") 
+        httpdPass = evaluateSingle("httpdPass",p->value().c_str());      
       else if (p->name() == "sender") 
         sender = evaluateSingle("sender",p->value().c_str());      
       else if (p->name() == "appPass") 
@@ -273,8 +314,12 @@ void evaluateSetup(AsyncWebServerRequest *request)
         smtpHost = evaluateSingle("smtpHost",p->value().c_str());
       else if (p->name() == "smtpPort") 
         smtpPort = evaluateSingle("smtpPort",p->value().c_str()).toInt();
-    }
+  
+      ElegantOTA.setAuth(httpdUser.c_str(), httpdPass.c_str());
+    }  
   }
+  if(!request->authenticate(httpdUser.c_str(), httpdPass.c_str()))
+    return request->requestAuthentication();
   request->send_P(200, "text/html", setup_html, processor); //durch processor filtern     
 
   //request->send(200, "text/plain", "Done. ESP will restart, connect to your router and search for ip of this device :-)");
@@ -290,6 +335,10 @@ void attachServerActions()
   server.on("/testMail", HTTP_GET, testMail);
   server.on("/", HTTP_GET,[](AsyncWebServerRequest *request)
   {
+    deepSleep = 0; //setze auf jeden Fall auf 0
+    if(!request->authenticate(httpdUser.c_str(), httpdPass.c_str()))
+      return request->requestAuthentication();
+
     request->send_P(200, "text/html", setup_html, processor); //durch processor filtern     
   });
   server.on("/", HTTP_POST, evaluateSetup);
@@ -364,6 +413,8 @@ void setup() {
   preferences.begin("settings",false); //"false heißt read/write"
   essid = preferences.getString("essid", "");  
   pass = preferences.getString("pass", "");
+  httpdUser = preferences.getString("httpdUser", "admin");
+  httpdPass = preferences.getString("httpdPass", "admin");
   sender = preferences.getString("sender", "");
   receiver = preferences.getString("receiver", "");
   receiverName = preferences.getString("receiverName", "");
@@ -373,6 +424,14 @@ void setup() {
   deepSleep = preferences.getString("deepSleep", "0").toInt();
   touchPin = preferences.getString("touchPin", "4").toInt();
   threshold = preferences.getString("threshold", "40").toInt();
+
+  //------------------------ota------------------
+  ElegantOTA.begin(&server);    // Start ElegantOTA
+  // ElegantOTA callbacks
+  ElegantOTA.onStart(onOTAStart);
+  ElegantOTA.onProgress(onOTAProgress);
+  ElegantOTA.onEnd(onOTAEnd);
+  //---------------------------------------------
   if (essid == "")
     setupAP();
   else 
@@ -387,9 +446,10 @@ void setup() {
     strcpy(actualMailBody,"Der Touchevent auf dem Knopf an der Klappe hat den ESP geweckt, daher Post. ");
   }
   touchAttachInterrupt(touchPin, touchCallback, threshold);
-  esp_sleep_enable_touchpad_wakeup();
+    // Set Authentication Credentials
+  ElegantOTA.setAuth(httpdUser.c_str(), httpdPass.c_str());
   previousMillis = (unsigned long) millis();
-
+  esp_sleep_enable_touchpad_wakeup(); 
 }
 void loop() {
   
@@ -412,6 +472,6 @@ void loop() {
       esp_deep_sleep_start();
       Serial.println("This will never be printed");
     }
-
-  } 
+  }
+  ElegantOTA.loop();
 }
