@@ -14,3 +14,15 @@ Ist USB und ein 3.7 Akku angeschlossen, dann leuchtet die Spannung-LED rot (verm
 
 Bei den nicht funktionierenden Beispielen war es so, dass der deepsleep zwar aufgerufen wurde, der Wakeup aber sofort mit dem Grund 0 kam, also nicht von deep sleep aufgeweckt. 
 
+Interessant - wenn er nicht am USB hängt, kommt der wakeup event nicht, also doch mal einen websocket einbauen, um Meldungen an den Webclient heraus zu geben
+
+Die touch-Events sehen dann auch wie folgt aus:
+56 56 56 56 56 56 56 56 56 56 56 56 56 56 56 56 56 56 54 56 
+56 56 55 48 46 46 46 47 47 46 46 47 46 47 46 55 55 55 55 55 
+55 47 47 46 47 47 46 47 46 47 46 47 47 46 47 55 46 46 46 46 
+46 55 55 47 47 46 55 56 56 56 56 56 56 56 56 55 56 56 56 56 56 56 
+schwankt also nur so um 10 herum, wenn man den threshold auf 50 setzt muesste es also gehen?
+Tut es auch, hatte den falschen Wert gespeichert :-( (treshold statt threshold)...
+Dennoch überraschend: bleibt das USB-Kabel ohne Spannung hängen, so sind die Unterschiede deutlich gravierender
+noch ein wenig web sockets erweitert
+

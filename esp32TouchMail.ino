@@ -9,6 +9,7 @@
 //per Projekt einstellungen gespeichert werden können 
 //#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
 #include <ElegantOTA.h>
+#include "ownLists.h"
 //#include <AsyncElegantOTA.h> //das ein warning, man möge ElegantOTA nutzen ...
 //ElegantOTA authentication ueberprueft nur /update, den Rest muesste man selbst machen 
 //https://randomnerdtutorials.com/esp32-esp8266-web-server-http-authentication/
@@ -25,6 +26,9 @@
 const String ApNet = "ESP32 (Touch) WebMan";
 const String ApIp = "192.168.4.1";
 bool inApMode = false;
+String sendMails = "checked";
+ObjectList <String> startMeldungen(32); //dient zum Puffern der Meldungen am Anfang
+
 
 String actualIP = ApIp;
 String essid = "";
@@ -40,7 +44,7 @@ String appPass = "";
 String smtpHost  = "smtp.gmail.com";
 int smtpPort =  esp_mail_smtp_port_587 ; //constante
 bool mailSendTriggered = false;
-
+bool inOtaUpdate = false;
 SMTPSession smtp;
 Session_Config config;
 
@@ -55,10 +59,12 @@ unsigned long previousMillis = 0;
 const long interval = 10000;  // interval to wait for Wi-Fi connection (milliseconds)
 unsigned long deepSleep = 0; //hier in Sekunden, 0: deepSleep ist aus 
 int touchPin = 4; // GPIO 4 is touch 0 
-int threshold = 40;
+int threshold = 52; //40;
 
 RTC_DATA_ATTR unsigned int wakeByTouch = 0;
 AsyncWebServer server(80);
+//fuer den Websocket
+AsyncWebSocket ws("/ws");
 
 unsigned long ota_progress_millis = 0;
 
@@ -68,11 +74,76 @@ unsigned long ota_progress_millis = 0;
 #define DATA_PIN D8    //The pin for controlling RGB LED
 #define LED_TYPE NEOPIXEL    //RGB LED strip type
 CRGB leds[NUM_LEDS];    //Instantiate RGB LED
+//---------------------------------------------
+void wsMessage(const char *message,AsyncWebSocketClient * client = 0)
+{ 
+  const char * begin = "{\"action\":\"message\",\"text\":\"";
+  const char * end = "\"}";
+  char * str = new char[strlen(message)+strlen(begin)+strlen(end)+24];//Puffer +24 statt +1 :-)
+  strcpy(str,begin);
+  strcat(str,message);
+  strcat(str,end);
+  if (!client)
+    ws.textAll(str);
+  else
+    client->text(str);
+    
+  delete [] str;
+}
 
+void wsMsgSerial(const char *message, AsyncWebSocketClient * client = 0)
+{
+  wsMessage(message,client); 
+  Serial.print(message);
+  int len = strlen(message); //ab<br>
+  if (!strcmp(message + len - 4,"<br>"))
+    Serial.print("\n");
+}
+void wsMsgSerialStart(const char *message)
+{
+  Serial.println(message);
+  startMeldungen.add(message);
+}
+
+
+void onWSEvent(AsyncWebSocket     *server,  //
+             AsyncWebSocketClient *client,  //
+             AwsEventType          type,    // the signature of this function is defined
+             void                 *arg,     // by the `AwsEventHandler` interface
+             uint8_t              *data,    //
+             size_t                len)    
+{
+    // we are going to add here the handling of
+    // the different events defined by the protocol
+    String msg; 
+     switch (type) 
+     {
+        case WS_EVT_CONNECT:
+            //bei einem connect werden die Startmeldungen ausgegeben, hier muesste ich doch schon die Daten senden können?  
+            msg = String("WebSocket client ");// + String(client->id()) + String(" connected from ") +  client->remoteIP().toString();
+            wsMsgSerial(msg.c_str());
+            msg = String("Anzahl Clients: ") + server->count()+String("<br>");
+            wsMsgSerial(msg.c_str());     
+            wsMessage(startMeldungen.htmlLines().c_str(),client);
+            startMeldungen.clear();
+            break;
+        case WS_EVT_DISCONNECT:
+            Serial.printf("WebSocket client #%u disconnected\n", client->id());
+            break;
+        case WS_EVT_DATA:
+            //handleWebSocketMessage(arg, data, len); arbeite hier nicht mit sockets sondern mit ajax-Requests
+            //moechte den socket nur um Daten auch senden zu koennen
+            break;
+        case WS_EVT_PONG:
+        case WS_EVT_ERROR:
+            break;
+     }
+}
 void onOTAStart() {
   // Log when OTA has started
   Serial.println("OTA update started!");
   // <Add your own code here>
+  inOtaUpdate = true;
 }
 
 void onOTAProgress(size_t current, size_t final) {
@@ -90,15 +161,19 @@ void onOTAEnd(bool success) {
   } else {
     Serial.println("There was an error during OTA update!");
   }
+  inOtaUpdate = false;
   // <Add your own code here>
 }
 
 //Mail funktionen
 void smtpCallback(SMTP_Status status){
+  char msg[64];
   Serial.println(status.info());
   if (status.success()){
     Serial.println("----------------");
     ESP_MAIL_PRINTF("Message sent success: %d\n", status.completedCount()); //fuer esp32 ginge auch Serial.print direkt
+    sprintf(msg,"Message sent success: %d<br>", status.completedCount());
+    startMeldungen.add(msg);
     ESP_MAIL_PRINTF("Message sent failled: %d\n", status.failedCount());
     Serial.println("----------------\n");
     struct tm dt;
@@ -171,15 +246,13 @@ void sendMailMessage(char * subj, char * text)
     return;
   }
   if (!smtp.isLoggedIn())
-  {
-    Serial.println("\nNot yet logged in.");
-  }
+    wsMsgSerialStart("Not yet logged in");
   else
   {
     if (smtp.isAuthenticated())
-      Serial.println("\nSuccessfully logged in.");
+      wsMsgSerialStart("Successfully logged in.");
     else
-      Serial.println("\nConnected with no Auth.");
+      wsMsgSerialStart("<br>Connected with no Auth.");
   }
 
   /* Start sending Email and close the session */
@@ -196,8 +269,11 @@ void resetWifiSettings()
 {
   essid = "";
   pass = "";
+  preferences.begin("settings",false); //"false heißt read/write"  
   preferences.putString("essid",essid);
   preferences.putString("pass",pass);
+  preferences.end();
+  wsMsgSerial("<br>Wifi Settings reset<br>");
   ESP.restart();
 }
 //zum Server-Kram
@@ -213,7 +289,7 @@ String processor(const String& var)
     result = httpdUser;
   else if (var == "HTTPDPASS")
     result = httpdPass;
-  else if (var == "UPDATE_LINK")
+  else if (var == "UPDATELINK")
     result = "<a href=\"http://" + actualIP +"/update\"> Update </a>";
   else if (var == "MAC")
     result = WiFi.macAddress();
@@ -231,6 +307,8 @@ String processor(const String& var)
     result = receiver;
   else if (var ==  "RECEIVERNAME")
     result = receiverName;
+  else if (var ==  "SENDMAILS")
+    result = sendMails;
   else if (var ==  "SENDER")
     result = sender;
   else if (var ==  "APPPASS")
@@ -283,9 +361,8 @@ void restart(AsyncWebServerRequest *request)
 
 String evaluateSingle(const char * key, const char *val)
 {
-        Serial.print(key);
-        Serial.print(" set to: ");
-        Serial.println(val);
+        String msg = String(key) +" set to: " + val ;
+        wsMsgSerialStart(msg.c_str());
         //save value
         preferences.putString(key,val);
         return val;
@@ -293,12 +370,19 @@ String evaluateSingle(const char * key, const char *val)
 void evaluateSetup(AsyncWebServerRequest *request) 
 {
   int params = request->params();
+      /*
+        vorsicht checkboxen rauben den letzten Nerv, nur wenn checked wird überhaupt etwas übertragen, nämlich der 
+        value. Ist der nicht gesetzt wird auch nichts übertragen - sicher, eigentlich sollte on übertragen werden
+      */
+  preferences.begin("settings",false); //"false heißt read/write"  
+  sendMails=evaluateSingle("sendMails","notChecked");
   for(int i=0;i<params;i++)
   {
     AsyncWebParameter* p = request->getParam(i);
     if(p->isPost())
     {
       // HTTP POST ssid value
+      
       if (p->name() == "essid") 
         essid = evaluateSingle("essid",p->value().c_str());
       else if (p->name() == "pass") 
@@ -307,6 +391,8 @@ void evaluateSetup(AsyncWebServerRequest *request)
         httpdUser = evaluateSingle("httpdUser",p->value().c_str());      
       else if (p->name() == "httpdPass") 
         httpdPass = evaluateSingle("httpdPass",p->value().c_str());      
+      else if (p->name() == "sendMails")
+        sendMails = evaluateSingle("sendMails","checked");//wenn was kommt, dann checked
       else if (p->name() == "sender") 
         sender = evaluateSingle("sender",p->value().c_str());      
       else if (p->name() == "appPass") 
@@ -320,15 +406,17 @@ void evaluateSetup(AsyncWebServerRequest *request)
       else if (p->name() == "touchPin") 
         touchPin = evaluateSingle("touchPin",p->value().c_str()).toInt();      
       else if (p->name() == "threshold") 
-        threshold = evaluateSingle("treshold",p->value().c_str()).toInt();      
+        threshold = evaluateSingle("threshold",p->value().c_str()).toInt();      
       else if (p->name() == "smtpHost") 
         smtpHost = evaluateSingle("smtpHost",p->value().c_str());
       else if (p->name() == "smtpPort") 
         smtpPort = evaluateSingle("smtpPort",p->value().c_str()).toInt();
-  
+      
       ElegantOTA.setAuth(httpdUser.c_str(), httpdPass.c_str());
     }  
   }
+
+  preferences.end();
   if(!request->authenticate(httpdUser.c_str(), httpdPass.c_str()))
     return request->requestAuthentication();
   request->send_P(200, "text/html", setup_html, processor); //durch processor filtern     
@@ -346,7 +434,6 @@ void attachServerActions()
   server.on("/testMail", HTTP_GET, testMail);
   server.on("/", HTTP_GET,[](AsyncWebServerRequest *request)
   {
-    deepSleep = 0; //setze auf jeden Fall auf 0
     if(!request->authenticate(httpdUser.c_str(), httpdPass.c_str()))
       return request->requestAuthentication();
 
@@ -366,14 +453,15 @@ void attachServerActions()
 void setupAP()
 {
     // Connect to Wi-Fi network with SSID and password
-    Serial.println("Setting AP (Access Point)");
+    wsMsgSerialStart("Setting AP (Access Point)");
     WiFi.softAP(ApNet.c_str(), NULL);
 
     actualIP = WiFi.softAPIP().toString();
-    Serial.print("AP IP address: ");
-    Serial.println(actualIP); 
+    String msg = "AP IP address: " + actualIP;
+    wsMsgSerialStart(msg.c_str());
     attachServerActions();
     server.begin();
+    deepSleep = 0;
     inApMode = true;
 
 }
@@ -381,8 +469,9 @@ void setupAP()
 void setupServer()
 {
   // Connect to Wi-Fi network with SSID and password
-  Serial.print("Setting up WebServer and Mail for ");
-  Serial.println(essid + " / "+ pass + " and Sender/receiver " + sender + " / "+ receiver );
+
+  String msg = "Setting up WebServer and Mail for " + essid + " / "+ pass + " and Sender/receiver " + sender + " / "+ receiver ;
+  wsMsgSerialStart(msg.c_str());
   unsigned long currentMillis = millis();
   previousMillis = currentMillis;
 
@@ -416,33 +505,27 @@ void print_wakeup_reason(esp_sleep_wakeup_cause_t wakeup_reason)
 {          
 
   switch(wakeup_reason) {             // Check the wake-up reason and print the corresponding message
-    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
-    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
-    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
-    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+    case ESP_SLEEP_WAKEUP_EXT0 : wsMsgSerialStart("Wakeup caused by external signal using RTC_IO<br>"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : wsMsgSerialStart("Wakeup caused by external signal using RTC_CNTL<br>"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : wsMsgSerialStart("Wakeup caused by timer<br>"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : wsMsgSerialStart("Wakeup caused by touchpad<br>"); break;
+    case ESP_SLEEP_WAKEUP_ULP : wsMsgSerialStart("Wakeup caused by ULP program<br>"); break;
+    default : wsMsgSerialStart("Wakeup was not caused by deep sleep:<br>"); break; //wakeUpreason ist dann i.d.R. 0
   }
 }
 
 void touchCallback(){
   //placeholder callback function
-  Serial.print(" t");
+  Serial.print(" t");//hier fuehrt ein wsMsgSerial zum "hängen"
 }
-
-void setup() {
-  Serial.begin(115200);
-  Serial.println("Waking up... or first start");
-  //led ein 
-  FastLED.addLeds<LED_TYPE, DATA_PIN>(leds, NUM_LEDS);     //Initialize RGB LED
-  leds[0] = CRGB::Blue;     // LED shows blue light
-  FastLED.show();
-  //lade gespeicherte Daten // setze initiale Werte 
+void readPreferences()
+{
   preferences.begin("settings",false); //"false heißt read/write"
   essid = preferences.getString("essid", "");  
   pass = preferences.getString("pass", "");
   httpdUser = preferences.getString("httpdUser", "admin");
   httpdPass = preferences.getString("httpdPass", "admin");
+  sendMails = preferences.getString("sendMails","checked");
   sender = preferences.getString("sender", "");
   receiver = preferences.getString("receiver", "");
   receiverName = preferences.getString("receiverName", "");
@@ -451,13 +534,26 @@ void setup() {
   smtpHost = preferences.getString("smtpHost",smtpHost);
   deepSleep = preferences.getString("deepSleep", "0").toInt();
   touchPin = preferences.getString("touchPin", "4").toInt();
-  threshold = preferences.getString("threshold", "40").toInt();
+  threshold = preferences.getString("threshold", "52").toInt();
+  preferences.end();
+}
 
-  //led aus
+void setup() {
+  Serial.begin(115200);
+  wsMsgSerialStart("Waking up... or first start");
+  //led ein 
+  FastLED.addLeds<LED_TYPE, DATA_PIN>(leds, NUM_LEDS);     //Initialize RGB LED
+  leds[0] = CRGB::Blue;     // LED shows blue light
+  FastLED.show();
+  //lade gespeicherte Daten // setze initiale Werte 
+  readPreferences();
+
+  ws.onEvent(onWSEvent);
+  server.addHandler(&ws); //WebSocket dazu 
 
 
   //------------------------ota------------------
-  
+  wsMsgSerialStart("Setup OTA<br>");
   ElegantOTA.begin(&server);    // Start ElegantOTA
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);
@@ -472,55 +568,78 @@ void setup() {
 
   setupMail();
   
-  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  print_wakeup_reason(wakeup_reason);   // Print the wake-up reason 
-  if (wakeup_reason == ESP_SLEEP_WAKEUP_TOUCHPAD)
-  {
-    strcpy(actualMailSubject,"Klappe: Touch");
-    strcpy(actualMailBody,"Der Touchevent auf dem Knopf an der Klappe hat den ESP geweckt, daher Post. ");
-  }
-  touchAttachInterrupt(touchPin, touchCallback, threshold);
     // Set Authentication Credentials
-  /*
+  
   ElegantOTA.setAuth(httpdUser.c_str(), httpdPass.c_str());
   previousMillis = (unsigned long) millis();
   //esp_sleep_enable_touchpad_wakeup();
-  */
+  
   //#define uS_TO_S_FACTOR 1000000ULL   // Conversion factor from microseconds to seconds
   //#define TIME_TO_SLEEP  5  
     //esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR); 
-    esp_sleep_enable_touchpad_wakeup();   
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  print_wakeup_reason(wakeup_reason);   // Print the wake-up reason 
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TOUCHPAD )
+  {
+    if ( sendMails == "checked")
+    {
+      strcpy(actualMailSubject,"Klappe: Touch");
+      strcpy(actualMailBody,"Der Touchevent auf dem Knopf an der Klappe hat den ESP geweckt, daher Post. ");
+      wsMsgSerialStart("Prepare sending of emails</n>");
+    }
+    else
+      wsMsgSerialStart("Sendmails is disabled by webinterface<br>");
+  }
+  char threshString[128];
+  sprintf(threshString, "Set Wake up Thresh to %d pin is %d <br>",threshold,touchPin) ;
+  wsMsgSerialStart(threshString);
+  touchAttachInterrupt(touchPin, touchCallback, threshold);
+  esp_sleep_enable_touchpad_wakeup();   
 }
 void loop() {
   
+   // ws.cleanupClients(); //wurde empfohlen einmal pro sekunde, scheint aber den OTA-Prozess zu stören 
+    unsigned long currentMillis = millis();
+
   //und check, ob wir eine Mail zu versenden haben, hier wg. der Probleme mit dem RTOS WatchDog
   //hier ginge es sicher auch aus dem setup, aber testMail Button loest ueber web aus
   if (strlen(actualMailSubject) != 0 )  
   {
     String msg = "Sende Mail mit Subject ";
     msg += actualMailSubject;
-    Serial.println(msg.c_str());
+    wsMsgSerial(msg.c_str());
     sendMailMessage(actualMailSubject,actualMailBody);
     actualMailSubject[0] = actualMailBody[0] = 0;
   }
   else
   {
-    unsigned long currentMillis = millis();
-    //zum kalibrieren
+    //zum kalibrieren, können wir aber drin lassen
     int touchValue = touchRead(touchPin);
-    Serial.print(touchValue);
-    Serial.print(" ");
-    delay(500);
-    //----------------------
-    if (deepSleep && !inApMode && !strlen(actualMailSubject) && currentMillis > previousMillis + deepSleep*1000)
+    char touchString[16];
+    if ((currentMillis - previousMillis ) % 500 == 0 )
     {
-      Serial.println("Going to sleep now");
+      sprintf(touchString,"%d ", touchValue);
+      wsMsgSerial(touchString);
+    }
+    //----------------------
+    if (deepSleep && !inApMode && !inOtaUpdate && !strlen(actualMailSubject) && currentMillis > previousMillis + deepSleep*1000)
+    {
+      
+      wsMsgSerial("<br>Going to sleep in 5 seconds<br>");
+      char * closeMsg = "{\"action\":\"close\"}";
+      ws.textAll(closeMsg);
+
+      delay(5000);
+      ws.closeAll();
       FastLED.clear(true);
       esp_deep_sleep_start();
       Serial.println("This will never be printed");
     }
   }
-  
+  //uint32_t touchTVal;
+  //touch_pad_sleep_get_threshold(touchPin,&touchTVal);
+  //String msg = "Thresh is " + touchTVal + "<br>";
+  //wsMsgSerial(msg.c_str());
   ElegantOTA.loop();
   
 }

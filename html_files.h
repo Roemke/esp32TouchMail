@@ -4,7 +4,7 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ESP Wi-Fi Manager</title>
+  <title>ESP Touch Mail</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta charset="utf-8">
   <link rel="icon" href="data:,">
@@ -104,9 +104,55 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
     }   
   </style>
   <script>
+      var websocket;
+      let gateway = `ws://${window.location.hostname}/ws`;
+
+      function initWebSocket()
+      { 
+        document.getElementById("iMessage").innerHTML +=   "<br>Init new websocket";
+         websocket = new WebSocket(gateway);
+         websocket.onopen = () =>
+         {
+            console.log('Connection opened');
+            document.getElementById("iMessage").innerHTML +=   "<br>Websock conn opened<br>";
+         } 
+         websocket.onerror = function(err) {
+            console.error('Socket encountered error: ', err.message, 'Closing socket');
+            websocket.close();
+          }
+         websocket.onclose = () => 
+         {
+            console.log('Connection closed');
+            document.getElementById("iMessage").innerHTML +=   "<br>Websock conn closed<br>";
+            setTimeout(initWebSocket, 2000); //wenn stress versuche reconnect - ich glaube das funktioniert nicht sauber
+         }
+         websocket.onmessage = (e) =>
+         {
+            //console.log(`Received a notification from ${e.origin}`);
+            //console.log(e);
+            //console.log(e.data);
+            let data =JSON.parse(e.data);
+            //console.log(data);
+            let now = new Date();
+            switch (data.action) //der kann nicht viel :-)
+            {
+              case "message":
+                let tStamp = now.toLocaleDateString('en-CA') + " " + now.toLocaleTimeString('de-DE') + ": "; //nicht genutzt
+                document.getElementById("iMessage").innerHTML +=   data.text;
+                break;
+              case "close":
+                document.getElementById("iMessage").innerHTML +="try to close socket"; 
+                websocket.close(); //er schließt zwar, aber das neue erstellen erzeugt sofort ein onopen event, auch wenn er nicht da ist, so also nicht 
+                break;
+            } 
+         }
+      }
+    
     window.addEventListener("load", () => 
     {
+      initWebSocket();
       let resetB = document.getElementById("resetWifi");
+      let clearB = document.getElementById("bClear");      
       let testMailB = document.getElementById("testMail");
       let restartB = document.getElementById("restart");
       resetB.addEventListener("click", () => 
@@ -120,6 +166,11 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
             document.getElementById('content').innerHTML = "You have to connect to %APNET% and reconfig on probably %APIP%" ;
           });
       });
+      clearB.addEventListener("click", () => 
+      {
+        document.getElementById("iMessage").innerHTML = "";
+      });
+      
       testMailB.addEventListener("click", () => 
       {
         document.getElementById('info').innerHTML = "Testmail send triggered";
@@ -143,14 +194,20 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
           });
       });
     });
+
   </script>
 </head>
 <body>
   <div class="topnav">
-    <h1 id="headline">ESP Wi-Fi Manager</h1>
+    <h1 id="headline">ESP Touch Settings</h1>
   </div>
   <div class="content" id="content">
     <div class="card-grid">
+      <div class="card">
+      <button type="button" id="bClear">Clear</button>
+      <div id="iMessage" >
+      </div>
+      </div>
       <div class="card">
         <div id="info">
           Changing Network-Settings: You need to restart ESP, don't forget to save before :-)
@@ -165,6 +222,8 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
             <input type="text" id ="httpdUser" name="httpdUser" value="%HTTPDUSER%"><br>
             <label for="httpdPass">Password (for user)</label>
             <input type="text" id ="httpdPass" name="httpdPass" value="%HTTPDPASS%"><br>
+            <label for "sendMails">Mails senden</label>
+            <input type="checkbox" id ="sendMails" name="sendMails" value="OnOff" %SENDMAILS%><br>
             <label for="sender">E-Mail Sender</label>
             <input type="text" id ="sender" name="sender" value="%SENDER%"><br>
             <label for="smtpHost">SMTP-Host</label>
@@ -197,7 +256,7 @@ const char setup_html[] PROGMEM = R"rawliteral(<!doctype html>
         </form>
       </div>
     </div>
-    <p>MAC des Geräts: %MAC%</p>
+    <p>MAC des Geräts: %MAC%, OTA: %UPDATELINK%</p>
   </div>
 </body>
 </html>
