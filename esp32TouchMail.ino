@@ -4,7 +4,9 @@
 #include <ESPAsyncWebServer.h>    
 #include <ESP_Mail_Client.h>
 #include "html_files.h"
-//define vor dem include -> sonst wird es auf 0 gesetzt nein, muss tatsaechlich in der ElegantOTA.h gesetzt werden 
+#include <FastLED.h>
+//define vor dem include -> sonst wird es auf 0 gesetzt nein, muss tatsaechlich in der ElegantOTA.h gesetzt werden, da ist visual studio besser, da 
+//per Projekt einstellungen gespeichert werden können 
 //#define ELEGANTOTA_USE_ASYNC_WEBSERVER 1
 #include <ElegantOTA.h>
 //#include <AsyncElegantOTA.h> //das ein warning, man möge ElegantOTA nutzen ...
@@ -22,6 +24,8 @@
  
 const String ApNet = "ESP32 (Touch) WebMan";
 const String ApIp = "192.168.4.1";
+bool inApMode = false;
+
 String actualIP = ApIp;
 String essid = "";
 String pass = "";
@@ -57,6 +61,13 @@ RTC_DATA_ATTR unsigned int wakeByTouch = 0;
 AsyncWebServer server(80);
 
 unsigned long ota_progress_millis = 0;
+
+
+//----------------------------interne WLED
+#define NUM_LEDS 1     //Number of RGB LED beads
+#define DATA_PIN D8    //The pin for controlling RGB LED
+#define LED_TYPE NEOPIXEL    //RGB LED strip type
+CRGB leds[NUM_LEDS];    //Instantiate RGB LED
 
 void onOTAStart() {
   // Log when OTA has started
@@ -363,9 +374,10 @@ void setupAP()
     Serial.println(actualIP); 
     attachServerActions();
     server.begin();
+    inApMode = true;
 
 }
-//ap aufsetzen, falls keine essid / keine Verbindung möglich
+//
 void setupServer()
 {
   // Connect to Wi-Fi network with SSID and password
@@ -388,7 +400,7 @@ void setupServer()
   actualIP = WiFi.localIP().toString();
   attachServerActions();
   server.begin();
-
+  inApMode = false;
   
   Serial.print("IP address of ESP-Device: ");
   Serial.println(actualIP); 
@@ -400,15 +412,31 @@ void setupServer()
 
 //----------------------------------------------------
 
+void print_wakeup_reason(esp_sleep_wakeup_cause_t wakeup_reason)
+{          
+
+  switch(wakeup_reason) {             // Check the wake-up reason and print the corresponding message
+    case ESP_SLEEP_WAKEUP_EXT0 : Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : Serial.println("Wakeup caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : Serial.println("Wakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : Serial.println("Wakeup caused by ULP program"); break;
+    default : Serial.printf("Wakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+}
 
 void touchCallback(){
   //placeholder callback function
-  Serial.println("touch detected");
+  Serial.print(" t");
 }
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println("Waking up... or first start");
+  //led ein 
+  FastLED.addLeds<LED_TYPE, DATA_PIN>(leds, NUM_LEDS);     //Initialize RGB LED
+  leds[0] = CRGB::Blue;     // LED shows blue light
+  FastLED.show();
   //lade gespeicherte Daten // setze initiale Werte 
   preferences.begin("settings",false); //"false heißt read/write"
   essid = preferences.getString("essid", "");  
@@ -425,13 +453,18 @@ void setup() {
   touchPin = preferences.getString("touchPin", "4").toInt();
   threshold = preferences.getString("threshold", "40").toInt();
 
+  //led aus
+
+
   //------------------------ota------------------
+  
   ElegantOTA.begin(&server);    // Start ElegantOTA
   // ElegantOTA callbacks
   ElegantOTA.onStart(onOTAStart);
   ElegantOTA.onProgress(onOTAProgress);
   ElegantOTA.onEnd(onOTAEnd);
   //---------------------------------------------
+  
   if (essid == "")
     setupAP();
   else 
@@ -440,6 +473,7 @@ void setup() {
   setupMail();
   
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  print_wakeup_reason(wakeup_reason);   // Print the wake-up reason 
   if (wakeup_reason == ESP_SLEEP_WAKEUP_TOUCHPAD)
   {
     strcpy(actualMailSubject,"Klappe: Touch");
@@ -447,9 +481,15 @@ void setup() {
   }
   touchAttachInterrupt(touchPin, touchCallback, threshold);
     // Set Authentication Credentials
+  /*
   ElegantOTA.setAuth(httpdUser.c_str(), httpdPass.c_str());
   previousMillis = (unsigned long) millis();
-  esp_sleep_enable_touchpad_wakeup(); 
+  //esp_sleep_enable_touchpad_wakeup();
+  */
+  //#define uS_TO_S_FACTOR 1000000ULL   // Conversion factor from microseconds to seconds
+  //#define TIME_TO_SLEEP  5  
+    //esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR); 
+    esp_sleep_enable_touchpad_wakeup();   
 }
 void loop() {
   
@@ -466,12 +506,21 @@ void loop() {
   else
   {
     unsigned long currentMillis = millis();
-    if (deepSleep && !strlen(actualMailSubject) && currentMillis > previousMillis + deepSleep*1000)
+    //zum kalibrieren
+    int touchValue = touchRead(touchPin);
+    Serial.print(touchValue);
+    Serial.print(" ");
+    delay(500);
+    //----------------------
+    if (deepSleep && !inApMode && !strlen(actualMailSubject) && currentMillis > previousMillis + deepSleep*1000)
     {
       Serial.println("Going to sleep now");
+      FastLED.clear(true);
       esp_deep_sleep_start();
       Serial.println("This will never be printed");
     }
   }
+  
   ElegantOTA.loop();
+  
 }
